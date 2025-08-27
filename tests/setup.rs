@@ -8,7 +8,7 @@ async fn new_server_needs_onboarded() -> Result {
     let server_fixture = maybe_skip_integration!(ServerFixture::create_single_use()).await;
     let client = server_fixture.client();
 
-    let res = client.is_onboarding_allowed().await?;
+    let res = client.is_onboarding_allowed()?;
     assert!(res);
 
     // Creating a new setup user without first onboarding is an error
@@ -27,7 +27,6 @@ async fn new_server_needs_onboarded() -> Result {
             Some(retention_period_hrs),
             None,
         )
-        .await
         .expect_err("Expected error, got success");
 
     assert!(matches!(
@@ -60,10 +59,9 @@ async fn onboarding() -> Result {
             Some(password.to_string()),
             Some(retention_period_hrs),
             None,
-        )
-        .await?;
+        )?;
 
-    let res = client.is_onboarding_allowed().await?;
+    let res = client.is_onboarding_allowed()?;
     assert!(!res);
 
     // Onboarding twice is an error
@@ -76,7 +74,6 @@ async fn onboarding() -> Result {
             Some(retention_period_hrs),
             None,
         )
-        .await
         .expect_err("Expected error, got success");
 
     assert!(matches!(
@@ -111,8 +108,7 @@ async fn create_users() -> Result {
             Some(password.to_string()),
             Some(retention_period_hrs),
             None,
-        )
-        .await?;
+        )?;
 
     Ok(())
 }

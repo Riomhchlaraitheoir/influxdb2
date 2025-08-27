@@ -1,7 +1,5 @@
-use futures::prelude::*;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let org = "sahamee";
     let bucket = "bucket";
     let influx_url = "http://localhost:8086";
@@ -21,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()?,
     ];
 
-    client.write(bucket, stream::iter(points)).await?;
+    client.write(bucket, points)?;
 
     Ok(())
 }

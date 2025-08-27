@@ -1,15 +1,14 @@
 use influxdb2::models::{LanguageRequest, Query};
 use influxdb2::FromDataPoint;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let influx_url = "http://localhost:8086";
     let token = "some-token";
 
     let client = influxdb2::Client::new(influx_url, "org", token);
 
-    client.query_suggestions().await?;
-    client.query_suggestions_name("some-name").await?;
+    client.query_suggestions()?;
+    client.query_suggestions_name("some-name")?;
 
     #[derive(FromDataPoint)]
     struct Measurement {
@@ -23,15 +22,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     client
         .query::<Measurement>(Some(Query::new("some-query".to_string())))
-        .await?;
+        ?;
 
     client
         .query_analyze(Some(Query::new("some-query".to_string())))
-        .await?;
+        ?;
 
     client
         .query_ast(Some(LanguageRequest::new("some-query".to_string())))
-        .await?;
+        ?;
 
     Ok(())
 }

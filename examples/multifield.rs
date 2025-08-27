@@ -1,7 +1,6 @@
 use std::env;
 
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
-use futures::stream;
 use influxdb2::models::DataPoint;
 use influxdb2::models::Query;
 use influxdb2::{Client, FromDataPoint};
@@ -26,8 +25,7 @@ impl Default for StockPrice {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = env::var("INFLUXDB_HOST").unwrap();
     let org = env::var("INFLUXDB_ORG").unwrap();
     let token = env::var("INFLUXDB_TOKEN").unwrap();
@@ -35,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::new(host, org, token);
 
-    println!("HealthCheck: {:#?}", client.health().await?);
+    println!("HealthCheck: {:#?}", client.health()?);
 
     let points: Vec<DataPoint> = vec![
         DataPoint::builder("bar")
@@ -49,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .field("open", 309.2)
             .build()?,
     ];
-    client.write(&bucket, stream::iter(points)).await?;
+    client.write(&bucket, points)?;
     let qs = format!(
         "
             from(bucket: \"{}\")
@@ -61,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "Query result was: {:#?}",
-        client.query::<StockPrice>(Some(query)).await?
+        client.query::<StockPrice>(Some(query))?
     );
 
     Ok(())

@@ -1,48 +1,46 @@
 //! Tasks API
 
-use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
 
 use crate::models::{TaskStatusType, Tasks};
-use crate::{Client, Http, RequestError, ReqwestProcessing, Serializing};
+use crate::{Client, Http, RequestError, UreqProcessing};
 
 impl Client {
     /// List all tasks.
-    pub async fn list_tasks(&self, request: ListTasksRequest) -> Result<Tasks, RequestError> {
-        let url = self.url("/api/v2/tasks");
+    pub fn list_tasks(&self, request: ListTasksRequest) -> Result<Tasks, RequestError> {
+        let url = self.url_with_params("/api/v2/tasks", request)?;
 
         let response = self
-            .request(Method::GET, &url)
-            .query(&request)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .get(url)
+            .call()
+            .context(UreqProcessing)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             let res = Http { status, text }.fail();
             return res;
         }
 
-        let res = response.json::<Tasks>().await.context(ReqwestProcessing)?;
+        let res = response
+            .into_body()
+            .read_json::<Tasks>()
+            .context(UreqProcessing)?;
         Ok(res)
     }
 
     /// Create a new task.
-    pub async fn create_task(&self, request: CreateTaskRequest) -> Result<(), RequestError> {
-        let url = self.url("/api/v2/tasks");
+    pub fn create_task(&self, request: CreateTaskRequest) -> Result<(), RequestError> {
+        let url = self.url("/api/v2/tasks")?;
         let response = self
-            .request(Method::POST, &url)
-            .body(serde_json::to_string(&request).context(Serializing)?)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .post(url)
+            .send_json(request)
+            .context(UreqProcessing)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             Http { status, text }.fail()?;
         }
 
@@ -50,16 +48,15 @@ impl Client {
     }
 
     /// Delete a task specified by task_id.
-    pub async fn delete_task(&self, task_id: &str) -> Result<(), RequestError> {
-        let url = self.url(&format!("/api/v2/tasks/{}", task_id));
+    pub fn delete_task(&self, task_id: &str) -> Result<(), RequestError> {
+        let url = self.url(&format!("/api/v2/tasks/{}", task_id))?;
         let response = self
-            .request(Method::DELETE, &url)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .delete_req(url)
+            .call()
+            .context(UreqProcessing)?;
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             Http { status, text }.fail()?;
         }
         Ok(())

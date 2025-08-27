@@ -307,8 +307,7 @@ impl TestServer {
                     Some(ADMIN_TEST_PASSWORD.to_string()),
                     Some(0),
                     None,
-                )
-                .await;
+                );
 
             match response {
                 Ok(onboarding) => {

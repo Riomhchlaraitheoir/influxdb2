@@ -1,35 +1,33 @@
 //! Write API
 
 use crate::models::WriteDataPoint;
-use crate::{Client, Http, RequestError, ReqwestProcessing};
+use crate::{BodyBuilding, Client, Http, RequestError, UreqProcessing};
 
 use bytes::BufMut;
-use futures::{Stream, StreamExt};
-use reqwest::header::HeaderMap;
-use reqwest::{Body, Method, StatusCode};
 use snafu::ResultExt;
-use std::io::{self, Write};
+use std::io::Write;
+use ureq::http::{HeaderName, HeaderValue, StatusCode};
+use ureq::{AsSendBody, Body};
 
 impl Client {
     /// Write line protocol data to the specified organization and bucket.
     /// This method writes with default timestamp precision (nanoseconds).
     /// Use write_line_protocol_with_precision if you want to write with a different precision.
-    pub async fn write_line_protocol(
+    pub fn write_line_protocol(
         &self,
         org: &str,
         bucket: &str,
-        body: impl Into<Body> + Send,
+        body: impl AsSendBody,
     ) -> Result<(), RequestError> {
         self.write_line_protocol_with_precision(org, bucket, body, TimestampPrecision::Nanoseconds)
-            .await
     }
 
     /// Write line protocol data to the specified organization and bucket.
-    pub async fn write_line_protocol_with_precision(
+    pub fn write_line_protocol_with_precision(
         &self,
         org: &str,
         bucket: &str,
-        body: impl Into<Body> + Send,
+        body: impl AsSendBody,
         precision: TimestampPrecision,
     ) -> Result<(), RequestError> {
         self.write_line_protocol_with_precision_headers(
@@ -37,38 +35,36 @@ impl Client {
             bucket,
             body,
             precision,
-            HeaderMap::new(),
+            [],
         )
-        .await
     }
 
-    async fn write_line_protocol_with_precision_headers(
+    fn write_line_protocol_with_precision_headers(
         &self,
         org: &str,
         bucket: &str,
-        body: impl Into<Body> + Send,
+        body: impl AsSendBody,
         precision: TimestampPrecision,
-        headers: HeaderMap,
+        headers: impl IntoIterator<Item = (HeaderName, HeaderValue)>,
     ) -> Result<(), RequestError> {
-        let body = body.into();
-        let write_url = self.url("/api/v2/write");
+        let write_url = self.url("/api/v2/write")?;
 
-        let response = self
-            .request(Method::POST, &write_url)
-            .headers(headers)
-            .query(&[
+        let mut request = self.post(write_url);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request
+            .query_pairs([
                 ("bucket", bucket),
                 ("org", org),
                 ("precision", precision.api_short_name()),
             ])
-            .body(body)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .send(body)
+            .context(UreqProcessing)?;
 
         if response.status() != StatusCode::NO_CONTENT {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             Http { status, text }.fail()?;
         }
 
@@ -79,67 +75,35 @@ impl Client {
     ///
     /// This method writes with default timestamp precision (nanoseconds).
     /// Use write_with_precision if you want to write with a different precision.
-    pub async fn write(
+    pub fn write(
         &self,
         bucket: &str,
-        body: impl Stream<Item = impl WriteDataPoint> + Send + Sync + 'static,
+        body: impl IntoIterator<Item = impl WriteDataPoint> + Send + Sync + 'static,
     ) -> Result<(), RequestError> {
         self.write_with_precision(bucket, body, TimestampPrecision::Nanoseconds)
-            .await
+
     }
 
     /// Write a `Stream` of `DataPoint`s to the specified organization and
     /// bucket.
-    pub async fn write_with_precision(
+    pub fn write_with_precision(
         &self,
         bucket: &str,
-        body: impl Stream<Item = impl WriteDataPoint> + Send + Sync + 'static,
+        body: impl IntoIterator<Item = impl WriteDataPoint> + Send + Sync + 'static,
         timestamp_precision: TimestampPrecision,
     ) -> Result<(), RequestError> {
-        let mut buffer = bytes::BytesMut::new();
+        let mut buffer = Vec::new();
 
-        let body = body.map(move |point| {
-            let mut w = (&mut buffer).writer();
-            point.write_data_point_to(&mut w)?;
-            w.flush()?;
-            Ok::<_, io::Error>(buffer.split().freeze())
-        });
-
-        #[cfg(feature = "gzip")]
-        {
-            use crate::Compression;
-            use async_compression::tokio::bufread::GzipEncoder;
-            use async_compression::Level;
-            use reqwest::header::HeaderValue;
-            use tokio_util::io::{ReaderStream, StreamReader};
-
-            match self.compression {
-                Compression::Gzip => {
-                    let encoder = GzipEncoder::with_quality(StreamReader::new(body), Level::Best);
-                    let body: Body = Body::wrap_stream(ReaderStream::new(encoder));
-
-                    let mut headers = HeaderMap::new();
-                    headers.insert("Content-Encoding", HeaderValue::from_static("gzip"));
-
-                    return self
-                        .write_line_protocol_with_precision_headers(
-                            &self.org,
-                            bucket,
-                            body,
-                            timestamp_precision,
-                            headers,
-                        )
-                        .await;
-                }
-                Compression::None => {
-                    // fall through
-                }
-            }
+        let mut w = (&mut buffer).writer();
+        for point in body {
+            point.write_data_point_to(&mut w).context(BodyBuilding)?;
         }
-        let body: Body = Body::wrap_stream(body);
+        w.flush().context(BodyBuilding)?;
+
+        let body = Body::builder().data(buffer);
 
         self.write_line_protocol_with_precision(&self.org, bucket, body, timestamp_precision)
-            .await
+
     }
 }
 
@@ -171,11 +135,9 @@ impl TimestampPrecision {
 mod tests {
     use super::*;
     use crate::models::DataPoint;
-    use futures::stream;
     use mockito::mock;
 
-    #[tokio::test]
-    async fn writing_points() {
+    fn writing_points() {
         let org = "some-org";
         let bucket = "some-bucket";
         let token = "some-token";
@@ -215,13 +177,12 @@ cpu,host=server01,region=us-west usage=0.87
         // when we assert on mock_server. The error messages that Mockito
         // provides are much clearer for explaining why a test failed than just
         // that the server returned 501, so don't use `?` here.
-        let result = client.write(bucket, stream::iter(points)).await;
+        let result = client.write(bucket, points);
         mock_server.assert();
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn writing_points_with_precision() {
+    fn writing_points_with_precision() {
         let org = "some-org";
         let bucket = "some-bucket";
         let token = "some-token";
@@ -255,14 +216,13 @@ cpu,host=server01 usage=0.5 1671095854
         // provides are much clearer for explaining why a test failed than just
         // that the server returned 501, so don't use `?` here.
         let result = client
-            .write_with_precision(bucket, stream::iter(points), TimestampPrecision::Seconds)
-            .await;
+            .write_with_precision(bucket, points, TimestampPrecision::Seconds)
+            ;
         mock_server.assert();
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn status_code_correctly_interpreted() {
+    fn status_code_correctly_interpreted() {
         let org = "org";
         let token = "token";
         let bucket = "bucket";
@@ -276,21 +236,21 @@ cpu,host=server01 usage=0.5 1671095854
             .create()
         };
 
-        let write_with_status = |status| async move {
+        let write_with_status = |status| {
             let mock_server = make_mock_server(status);
             let client = Client::new(mockito::server_url(), org, token);
             let points: Vec<DataPoint> = vec![];
-            let res = client.write(bucket, stream::iter(points)).await;
+            let res = client.write(bucket, points);
             mock_server.assert();
             res
         };
 
         // success status
-        assert!(write_with_status(204).await.is_ok());
+        assert!(write_with_status(204).is_ok());
 
         // failing status
         for status in [200, 201, 400, 401, 404, 413, 429, 500, 503] {
-            assert!(write_with_status(status).await.is_err());
+            assert!(write_with_status(status).is_err());
         }
     }
 }

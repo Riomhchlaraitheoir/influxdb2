@@ -1,63 +1,56 @@
 //! Authorizations (tokens) API.
 
-use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
 
 use crate::models::authorization::{Authorization, Authorizations, Status};
 use crate::models::permission::Permission;
-use crate::{Client, Http, RequestError, ReqwestProcessing, Serializing};
+use crate::{Client, Http, RequestError, UreqProcessing};
 
 impl Client {
     /// List all authorization matching specified parameters
-    pub async fn list_authorizations(
+    pub fn list_authorizations(
         &self,
         request: ListAuthorizationsRequest,
     ) -> Result<Authorizations, RequestError> {
-        let url = self.url("/api/v2/authorizations");
+        let url = self.url_with_params("/api/v2/authorizations", request)?;
 
         let response = self
-            .request(Method::GET, &url)
-            .query(&request)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .get(url)
+            .call()
+            .context(UreqProcessing)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             let res = Http { status, text }.fail();
             return res;
         }
 
-        response.json().await.context(ReqwestProcessing)
+        response.into_body().read_json().context(UreqProcessing)
     }
 
     /// Create a new authorization in the organization.
-    pub async fn create_authorization(
+    pub fn create_authorization(
         &self,
         request: CreateAuthorizationRequest,
     ) -> Result<Authorization, RequestError> {
-        let create_bucket_url = self.url("/api/v2/authorizations");
+        let create_bucket_url = self.url("/api/v2/authorizations")?;
 
         let response = self
-            .request(Method::POST, &create_bucket_url)
-            .body(serde_json::to_string(&request).context(Serializing)?)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .post(create_bucket_url)
+            .send_json(request)
+            .context(UreqProcessing)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             let res = Http { status, text }.fail();
             return res;
         }
 
-        response
-            .json::<Authorization>()
-            .await
-            .context(ReqwestProcessing)
+        response.into_body().read_json::<Authorization>()
+            .context(UreqProcessing)
     }
 }
 

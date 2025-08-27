@@ -1,38 +1,35 @@
 //! Organization API
 
-use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
 
 use crate::models::Organizations;
-use crate::{Client, Http, RequestError, ReqwestProcessing};
+use crate::{Client, Http, RequestError, UreqProcessing};
 
 impl Client {
     /// List all organizations.
-    pub async fn list_organizations(
+    pub fn list_organizations(
         &self,
         request: ListOrganizationRequest,
     ) -> Result<Organizations, RequestError> {
-        let url = self.url("/api/v2/orgs");
+        let url = self.url_with_params("/api/v2/orgs", request)?;
 
         let response = self
-            .request(Method::GET, &url)
-            .query(&request)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .get(url)
+            .call()
+            .context(UreqProcessing)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             let res = Http { status, text }.fail();
             return res;
         }
 
         let res = response
-            .json::<Organizations>()
-            .await
-            .context(ReqwestProcessing)?;
+            .into_body()
+            .read_json::<Organizations>()
+            .context(UreqProcessing)?;
         Ok(res)
     }
 }
@@ -69,8 +66,7 @@ mod tests {
     use super::*;
     use mockito::mock;
 
-    #[tokio::test]
-    async fn list_buckets() {
+    fn list_buckets() {
         let org_id = "0000111100001111".to_string();
         let token = "some-token";
 
@@ -86,7 +82,7 @@ mod tests {
             ..ListOrganizationRequest::default()
         };
 
-        let _result = client.list_organizations(request).await;
+        let _result = client.list_organizations(request);
 
         mock_server.assert();
     }

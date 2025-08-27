@@ -1,60 +1,55 @@
 //! Buckets API
 
-use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
 
 use crate::models::{Buckets, PostBucketRequest};
-use crate::{Client, Http, RequestError, ReqwestProcessing};
+use crate::{Client, Http, RequestError, UreqProcessing};
 
 impl Client {
     /// List all buckets matching specified parameters
-    pub async fn list_buckets(
+    pub fn list_buckets(
         &self,
         request: Option<ListBucketsRequest>,
     ) -> Result<Buckets, RequestError> {
-        let url = self.url("/api/v2/buckets");
+        let url = self.url_with_params("/api/v2/buckets", request)?;
 
         let response = self
-            .request(Method::GET, &url)
-            .query(&request)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .get(url)
+            .call()
+            .context(UreqProcessing)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             let res = Http { status, text }.fail();
             return res;
         }
 
         let res = response
-            .json::<Buckets>()
-            .await
-            .context(ReqwestProcessing)?;
+            .into_body()
+            .read_json::<Buckets>()
+            .context(UreqProcessing)?;
 
         Ok(res)
     }
 
     /// Create a new bucket in the organization specified by the 16-digit
     /// hexadecimal `org_id` and with the bucket name `bucket`.
-    pub async fn create_bucket(
+    pub fn create_bucket(
         &self,
         post_bucket_request: Option<PostBucketRequest>,
     ) -> Result<(), RequestError> {
-        let create_bucket_url = self.url("/api/v2/buckets");
+        let create_bucket_url = self.url("/api/v2/buckets")?;
 
         let response = self
-            .request(Method::POST, &create_bucket_url)
-            .json(&post_bucket_request.unwrap_or_default())
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .post(create_bucket_url)
+            .send_json(post_bucket_request.unwrap_or_default())
+            .context(UreqProcessing)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             Http { status, text }.fail()?;
         }
 
@@ -62,17 +57,16 @@ impl Client {
     }
 
     /// Delete a bucket specified by bucket id.
-    pub async fn delete_bucket(&self, bucket_id: &str) -> Result<(), RequestError> {
-        let url = self.url(&format!("/api/v2/buckets/{}", bucket_id));
+    pub fn delete_bucket(&self, bucket_id: &str) -> Result<(), RequestError> {
+        let url = self.url(&format!("/api/v2/buckets/{}", bucket_id))?;
 
         let response = self
-            .request(Method::DELETE, &url)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .delete_req(url)
+            .call()
+            .context(UreqProcessing)?;
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             Http { status, text }.fail()?;
         }
         Ok(())
@@ -114,8 +108,7 @@ mod tests {
         (client, org_id, token)
     }
 
-    #[tokio::test]
-    async fn create_bucket() {
+    fn create_bucket() {
         let (client, org_id, token) = setup();
 
         let bucket = "some-bucket".to_string();
@@ -133,13 +126,12 @@ mod tests {
 
         let _result = client
             .create_bucket(Some(PostBucketRequest::new(org_id, bucket)))
-            .await;
+            ;
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn list_buckets_with_params() {
+    fn list_buckets_with_params() {
         let (client, _, token) = setup();
 
         let limit = 1;
@@ -158,20 +150,19 @@ mod tests {
             ..ListBucketsRequest::default()
         };
 
-        let _result = client.list_buckets(Some(request)).await;
+        let _result = client.list_buckets(Some(request));
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn list_buckets_without_params() {
+    fn list_buckets_without_params() {
         let (client, _, token) = setup();
 
         let mock_server = mock("GET", "/api/v2/buckets")
             .match_header("Authorization", format!("Token {}", token).as_str())
             .create();
 
-        let _result = client.list_buckets(None).await;
+        let _result = client.list_buckets(None);
 
         mock_server.assert();
     }

@@ -3,31 +3,30 @@
 //! Get health of an InfluxDB instance
 
 use crate::models::HealthCheck;
-use crate::{Client, Http, RequestError, ReqwestProcessing};
-use reqwest::{Method, StatusCode};
+use crate::{Client, Http, RequestError, UreqProcessing};
 use snafu::ResultExt;
+use ureq::http::StatusCode;
 
 impl Client {
     /// Get health of an instance
-    pub async fn health(&self) -> Result<HealthCheck, RequestError> {
-        let health_url = self.url("/health");
+    pub fn health(&self) -> Result<HealthCheck, RequestError> {
+        let health_url = self.url("/health")?;
         let response = self
-            .request(Method::GET, &health_url)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .get(health_url)
+            .call()
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => Ok(response
-                .json::<HealthCheck>()
-                .await
-                .context(ReqwestProcessing)?),
+                .into_body()
+                .read_json::<HealthCheck>()
+                .context(UreqProcessing)?),
             StatusCode::SERVICE_UNAVAILABLE => Ok(response
-                .json::<HealthCheck>()
-                .await
-                .context(ReqwestProcessing)?),
+                .into_body()
+                .read_json::<HealthCheck>()
+                .context(UreqProcessing)?),
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
@@ -39,13 +38,12 @@ mod tests {
     use super::*;
     use mockito::mock;
 
-    #[tokio::test]
-    async fn health() {
+    fn health() {
         let mock_server = mock("GET", "/health").create();
 
         let client = Client::new(mockito::server_url(), "", "");
 
-        let _result = client.health().await;
+        let _result = client.health();
 
         mock_server.assert();
     }

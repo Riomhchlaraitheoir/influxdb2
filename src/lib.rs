@@ -48,7 +48,7 @@
 //!     }
 //! }
 //!
-//! async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! fn example() -> Result<(), Box<dyn std::error::Error>> {
 //!     let host = std::env::var("INFLUXDB_HOST").unwrap();
 //!     let org = std::env::var("INFLUXDB_ORG").unwrap();
 //!     let token = std::env::var("INFLUXDB_TOKEN").unwrap();
@@ -61,7 +61,7 @@
 //!     ", "AAPL");
 //!     let query = Query::new(qs.to_string());
 //!     let res: Vec<StockPrice> = client.query::<StockPrice>(Some(query))
-//!         .await?;
+//!         ?;
 //!     println!("{:?}", res);
 //!
 //!     Ok(())
@@ -71,8 +71,7 @@
 //! ### Writing
 //!
 //! ```rust
-//! async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//!     use futures::prelude::*;
+//! fn example() -> Result<(), Box<dyn std::error::Error>> {
 //!     use influxdb2::models::DataPoint;
 //!     use influxdb2::Client;
 //!
@@ -94,32 +93,49 @@
 //!             .build()?,
 //!     ];
 //!                                                             
-//!     client.write(bucket, stream::iter(points)).await?;
+//!     client.write(bucket, points)?;
 //!     
 //!     Ok(())
 //! }
 //! ```
 
-use reqwest::{Method, Url};
+use std::io;
 use secrecy::{ExposeSecret, Secret};
 use snafu::{ResultExt, Snafu};
+use serde::Serialize;
+use ureq::http::uri::{InvalidUriParts};
+use ureq::http::{StatusCode, Uri};
+use ureq::typestate::{WithBody, WithoutBody};
+use ureq::RequestBuilder;
 
 /// Errors that occur while making requests to the Influx server.
 #[derive(Debug, Snafu)]
 pub enum RequestError {
+    /// failed to serialise the request query parameters
+    UriBuilding {
+        source: serde_urlencoded::ser::Error,
+    },
+    /// failed to build the request url
+    RequestBuilding {
+        source: InvalidUriParts,
+    },
+    /// While building the request body encountered an IO error
+    BodyBuilding {
+        source: io::Error
+    },
     /// While making a request to the Influx server, the underlying `reqwest`
     /// library returned an error that was not an HTTP 400 or 500.
     #[snafu(display("Error while processing the HTTP request: {}", source))]
-    ReqwestProcessing {
+    UreqProcessing {
         /// The underlying error object from `reqwest`.
-        source: reqwest::Error,
+        source: ureq::Error,
     },
     /// The underlying `reqwest` library returned an HTTP error with code 400
     /// (meaning a client error) or 500 (meaning a server error).
     #[snafu(display("HTTP request returned an error: {}, `{}`", status, text))]
     Http {
         /// The `StatusCode` returned from the request
-        status: reqwest::StatusCode,
+        status: StatusCode,
         /// Any text data returned from the request
         text: String,
     },
@@ -141,24 +157,14 @@ pub enum RequestError {
     },
 }
 
-#[cfg(feature = "gzip")]
-#[derive(Debug, Clone)]
-enum Compression {
-    None,
-    Gzip,
-}
-
 /// Client to a server supporting the InfluxData 2.0 API.
 #[derive(Debug, Clone)]
 pub struct Client {
     /// The base URL this client sends requests to
-    pub base: Url,
+    pub base: Uri,
     /// The organization tied to this client
     pub org: String,
     auth_header: Option<Secret<String>>,
-    reqwest: reqwest::Client,
-    #[cfg(feature = "gzip")]
-    compression: Compression,
 }
 
 impl Client {
@@ -182,21 +188,45 @@ impl Client {
     }
 
     /// Consolidate common request building code
-    fn request(&self, method: Method, url: &str) -> reqwest::RequestBuilder {
-        let mut req = self.reqwest.request(method, url);
-
+    fn with_auth<Any>(&self, mut req: RequestBuilder<Any>) -> RequestBuilder<Any> {
         if let Some(auth) = &self.auth_header {
             req = req.header("Authorization", auth.expose_secret());
         }
-
         req
     }
 
+    fn get(&self, url: Uri) -> RequestBuilder<WithoutBody> {
+        self.with_auth(ureq::get(url))
+    }
+
+    fn post(&self, url: Uri) -> RequestBuilder<WithBody> {
+        self.with_auth(ureq::post(url))
+    }
+
+    fn patch(&self, url: Uri) -> RequestBuilder<WithBody> {
+        self.with_auth(ureq::patch(url))
+    }
+
+    fn delete_req(&self, url: Uri) -> RequestBuilder<WithoutBody> {
+        self.with_auth(ureq::delete(url))
+    }
+
     /// Join base Url of the client to target API endpoint into valid Url
-    fn url(&self, endpoint: &str) -> String {
-        let mut url = self.base.clone();
-        url.set_path(endpoint);
-        url.into()
+    fn url(&self, mut endpoint: &str) -> Result<Uri, RequestError> {
+        let mut parts = self.base.clone().into_parts();
+        let endpoint = if endpoint.starts_with('/') {
+            endpoint.to_string()
+        } else {
+            format!("/{endpoint}")
+        };
+        parts.path_and_query = Some(endpoint.parse().unwrap());
+        Uri::from_parts(parts).context(RequestBuilding)
+    }
+    fn url_with_params(&self, endpoint: &str, query: impl Serialize) -> Result<Uri, RequestError> {
+        let mut parts = self.base.clone().into_parts();
+        let query = serde_urlencoded::to_string(query).context(UriBuilding)?;
+        parts.path_and_query = Some(format!("{endpoint}?{query}").parse().unwrap());
+        Uri::from_parts(parts).context(RequestBuilding)
     }
 }
 
@@ -205,39 +235,24 @@ impl Client {
 pub enum BuildError {
     /// While constructing the reqwest client an error occurred
     #[snafu(display("Error while building the client: {}", source))]
-    ReqwestClientError {
+    UreqClientError {
         /// Reqwest internal error
-        source: reqwest::Error,
+        source: ureq::Error,
     },
 }
 /// ClientBuilder builds the `Client`
 #[derive(Debug)]
 pub struct ClientBuilder {
     /// The base URL this client sends requests to
-    pub base: Url,
+    pub base: Uri,
     /// The organization tied to this client
     pub org: String,
     auth_header: Option<Secret<String>>,
-    reqwest: reqwest::ClientBuilder,
-    #[cfg(feature = "gzip")]
-    compression: Compression,
 }
 
 impl ClientBuilder {
     /// Construct a new `ClientBuilder`.
     pub fn new(
-        url: impl Into<String>,
-        org: impl Into<String>,
-        auth_token: impl Into<String>,
-    ) -> Self {
-        Self::with_builder(reqwest::ClientBuilder::new(), url, org, auth_token)
-    }
-
-    /// Construct a new `ClientBuilder` with a provided [`reqwest::ClientBuilder`].
-    ///
-    /// Can be used to pass custom `reqwest` parameters, such as TLS configuration.
-    pub fn with_builder(
-        builder: reqwest::ClientBuilder,
         url: impl Into<String>,
         org: impl Into<String>,
         auth_token: impl Into<String>,
@@ -250,25 +265,16 @@ impl ClientBuilder {
         };
 
         let url: String = url.into();
-        let base =
-            Url::parse(&url).unwrap_or_else(|_| panic!("Invalid url was provided: {}", &url));
+        let url = url.strip_suffix("/").unwrap_or(&url).to_string();
+        let base = url
+            .parse()
+            .unwrap_or_else(|_| panic!("Invalid url was provided: {}", &url));
 
         Self {
             base,
             org: org.into(),
             auth_header,
-            reqwest: builder,
-            #[cfg(feature = "gzip")]
-            compression: Compression::None,
         }
-    }
-
-    /// Enable gzip compression on the write and write_with_precision calls
-    #[cfg(feature = "gzip")]
-    pub fn gzip(mut self, enable: bool) -> ClientBuilder {
-        self.reqwest = self.reqwest.gzip(enable);
-        self.compression = Compression::Gzip;
-        self
     }
 
     /// Build returns the influx client
@@ -277,9 +283,6 @@ impl ClientBuilder {
             base: self.base,
             org: self.org,
             auth_header: self.auth_header,
-            reqwest: self.reqwest.build().context(ReqwestClientError)?,
-            #[cfg(feature = "gzip")]
-            compression: self.compression,
         })
     }
 }
@@ -300,7 +303,7 @@ mod tests {
 
     #[test]
     fn url_invalid_panic() {
-        let result = std::panic::catch_unwind(|| Client::new("/3242/23", "some-org", "some-token"));
+        let result = std::panic::catch_unwind(|| Client::new("\\/3242/23", "some-org", "some-token"));
         assert!(result.is_err());
     }
 
@@ -310,8 +313,8 @@ mod tests {
         let base = "http://influxdb.com/";
         let client = Client::new(base, "some-org", "some-token");
 
-        assert_eq!(format!("{}api/v2/write", base), client.url("/api/v2/write"));
+        assert_eq!(format!("{}api/v2/write", base), client.url("/api/v2/write").unwrap().to_string());
 
-        assert_eq!(client.url("/api/v2/write"), client.url("api/v2/write"));
+        assert_eq!(client.url("/api/v2/write").unwrap(), client.url("api/v2/write").unwrap());
     }
 }

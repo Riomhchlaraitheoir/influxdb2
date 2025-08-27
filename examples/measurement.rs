@@ -1,7 +1,6 @@
 use std::error::Error;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let org = "sahamee";
     let bucket = "bucket";
     let influx_url = "http://localhost:8086";
@@ -11,14 +10,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let measurements = client
         .list_measurements(bucket, Some("-365d"), Some("-1d"))
-        .await
+
         .unwrap();
     println!("measurements: {:?}", measurements);
 
     for m in measurements.iter() {
         let field_keys = client
             .list_measurement_field_keys(bucket, m, Some("-365d"), Some("now()"))
-            .await
+
             .unwrap();
         println!("field keys: {:?}", field_keys);
     }
@@ -26,7 +25,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for m in measurements.iter() {
         let tag_values = client
             .list_measurement_tag_values(bucket, m, "host", Some("-365d"), None)
-            .await;
+            ;
         println!(
             "tag values for measurement {} and tag host: {:?}",
             &m, tag_values
@@ -36,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for m in measurements.iter() {
         let tag_values = client
             .list_measurement_tag_keys(bucket, m, Some("-365d"), None)
-            .await;
+            ;
         println!(
             "tag values for measurement {} and tag host: {:?}",
             &m, tag_values

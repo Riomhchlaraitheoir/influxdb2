@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 
-use crate::{Client, Http, RequestError, ReqwestProcessing, Serializing};
+use crate::{Client, Http, RequestError, UreqProcessing};
 
 use base64::decode;
 use chrono::DateTime;
@@ -15,9 +15,8 @@ use go_parse_duration::parse_duration;
 use influxdb2_structmap::value::Value;
 use influxdb2_structmap::{FromMap, GenericMap};
 use ordered_float::OrderedFloat;
-use reqwest::{Method, StatusCode};
 use snafu::ResultExt;
-
+use ureq::http::StatusCode;
 use crate::models::{
     AnalyzeQueryResponse, AstResponse, FluxSuggestion, FluxSuggestions, LanguageRequest, Query,
 };
@@ -46,69 +45,64 @@ impl<'a> QueryTableIter {
 
 impl Client {
     /// Get Query Suggestions
-    pub async fn query_suggestions(&self) -> Result<FluxSuggestions, RequestError> {
-        let req_url = self.url("/api/v2/query/suggestions");
+    pub fn query_suggestions(&self) -> Result<FluxSuggestions, RequestError> {
+        let req_url = self.url("/api/v2/query/suggestions")?;
         let response = self
-            .request(Method::GET, &req_url)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .get(req_url)
+            .call()
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => Ok(response
-                .json::<FluxSuggestions>()
-                .await
-                .context(ReqwestProcessing)?),
+                .into_body()
+                .read_json::<FluxSuggestions>()
+                .context(UreqProcessing)?),
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
     }
 
     /// Query Suggestions with name
-    pub async fn query_suggestions_name(&self, name: &str) -> Result<FluxSuggestion, RequestError> {
+    pub fn query_suggestions_name(&self, name: &str) -> Result<FluxSuggestion, RequestError> {
         let req_url = self.url(&format!(
             "/api/v2/query/suggestions/{name}",
             name = crate::common::urlencode(name)
-        ));
+        ))?;
 
         let response = self
-            .request(Method::GET, &req_url)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .get(req_url)
+            .call()
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => Ok(response
-                .json::<FluxSuggestion>()
-                .await
-                .context(ReqwestProcessing)?),
+                .into_body()
+                .read_json::<FluxSuggestion>()
+                .context(UreqProcessing)?),
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
     }
 
     /// Query
-    pub async fn query<T: FromMap>(&self, query: Option<Query>) -> Result<Vec<T>, RequestError> {
-        let req_url = self.url("/api/v2/query");
-        let body = serde_json::to_string(&query.unwrap_or_default()).context(Serializing)?;
+    pub fn query<T: FromMap>(&self, query: Option<Query>) -> Result<Vec<T>, RequestError> {
+        let req_url = self.url("/api/v2/query")?;
 
         let response = self
-            .request(Method::POST, &req_url)
+            .post(req_url)
             .header("Accepting-Encoding", "identity")
             .header("Content-Type", "application/json")
-            .query(&[("org", &self.org)])
-            .body(body)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .query("org", &self.org)
+            .send_json(query.unwrap_or_default())
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => {
-                let text = response.text().await.unwrap();
+                let text = response.into_body().read_to_string().unwrap();
                 let qtr = QueryTableResult::new(&text[..]);
                 let qr = QueryResult::new(qtr)?;
                 let mut res = vec![];
@@ -118,30 +112,27 @@ impl Client {
                 Ok(res)
             }
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
     }
 
     /// Query Raw
-    pub async fn query_raw(&self, query: Option<Query>) -> Result<Vec<FluxRecord>, RequestError> {
-        let req_url = self.url("/api/v2/query");
-        let body = serde_json::to_string(&query.unwrap_or_default()).context(Serializing)?;
+    pub fn query_raw(&self, query: Option<Query>) -> Result<Vec<FluxRecord>, RequestError> {
+        let req_url = self.url("/api/v2/query")?;
 
         let response = self
-            .request(Method::POST, &req_url)
+            .post(req_url)
             .header("Accepting-Encoding", "identity")
             .header("Content-Type", "application/json")
-            .query(&[("org", &self.org)])
-            .body(body)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .query("org", &self.org)
+            .send_json(query.unwrap_or_default())
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => {
-                let text = response.text().await.unwrap();
+                let text = response.into_body().read_to_string().unwrap();
                 let qtr = QueryTableResult::new(&text[..]);
                 let mut records = vec![];
                 for record in qtr.iterator() {
@@ -150,7 +141,7 @@ impl Client {
                 Ok(records)
             }
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
@@ -158,88 +149,78 @@ impl Client {
 
     /// Query return an iterator over the raw results
     /// Saves on memory usage
-    pub async fn query_raw_iter(
+    pub fn query_raw_iter(
         &self,
         query: Option<Query>,
     ) -> Result<QueryTableIter, RequestError> {
-        let req_url = self.url("/api/v2/query");
-        let body = serde_json::to_string(&query.unwrap_or_default()).context(Serializing)?;
+        let req_url = self.url("/api/v2/query")?;
 
         let response = self
-            .request(Method::POST, &req_url)
+            .post(req_url)
             .header("Accepting-Encoding", "identity")
             .header("Content-Type", "application/json")
-            .query(&[("org", &self.org)])
-            .body(body)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .query("org", &self.org)
+            .send_json(query.unwrap_or_default())
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
 
                 Ok(QueryTableIter::new(text))
             }
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
     }
 
     /// Analyze Query
-    pub async fn query_analyze(
+    pub fn query_analyze(
         &self,
         query: Option<Query>,
     ) -> Result<AnalyzeQueryResponse, RequestError> {
-        let req_url = self.url("/api/v2/query/analyze");
+        let req_url = self.url("/api/v2/query/analyze")?;
 
         let response = self
-            .request(Method::POST, &req_url)
+            .post(req_url)
             .header("Content-Type", "application/json")
-            .body(serde_json::to_string(&query.unwrap_or_default()).context(Serializing)?)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .send_json(query.unwrap_or_default())
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => Ok(response
-                .json::<AnalyzeQueryResponse>()
-                .await
-                .context(ReqwestProcessing)?),
+                .into_body()
+                .read_json::<AnalyzeQueryResponse>()
+                .context(UreqProcessing)?),
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
     }
 
     /// Get Query AST Response
-    pub async fn query_ast(
+    pub fn query_ast(
         &self,
         language_request: Option<LanguageRequest>,
     ) -> Result<AstResponse, RequestError> {
-        let req_url = self.url("/api/v2/query/ast");
+        let req_url = self.url("/api/v2/query/ast")?;
 
         let response = self
-            .request(Method::POST, &req_url)
+            .post(req_url)
             .header("Content-Type", "application/json")
-            .body(
-                serde_json::to_string(&language_request.unwrap_or_default())
-                    .context(Serializing)?,
-            )
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .send_json(language_request.unwrap_or_default())
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => Ok(response
-                .json::<AstResponse>()
-                .await
-                .context(ReqwestProcessing)?),
+                .into_body()
+                .read_json::<AstResponse>()
+                .context(UreqProcessing)?),
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
@@ -252,7 +233,7 @@ impl Client {
     /// * `bucket` - The bucket name
     /// * `start` - Optional start time. Default is `-30d`
     /// * `stop` - Optional stop time. Default is `now()`
-    pub async fn list_measurements(
+    pub fn list_measurements(
         &self,
         bucket: &str,
         start: Option<&str>,
@@ -273,7 +254,7 @@ impl Client {
 
             schema.measurements({params})"#
         ));
-        self.exec_schema_query(query).await
+        self.exec_schema_query(query)
     }
 
     /// List field keys for measurement
@@ -284,7 +265,7 @@ impl Client {
     /// * `measurement` - The measurement name
     /// * `start` - Optional start time. Default is `-30d`
     /// * `stop` - Optional stop time. Default is `now()`
-    pub async fn list_measurement_field_keys(
+    pub fn list_measurement_field_keys(
         &self,
         bucket: &str,
         measurement: &str,
@@ -307,7 +288,7 @@ impl Client {
 
             schema.measurementFieldKeys({params})"#,
         ));
-        self.exec_schema_query(query).await
+        self.exec_schema_query(query)
     }
 
     /// List all tag values for measurement tag
@@ -319,7 +300,7 @@ impl Client {
     /// * `tag` - The tag name
     /// * `start` - Optional start time. Default is `-30d`
     /// * `stop` - Optional stop time. Default is `now()`
-    pub async fn list_measurement_tag_values(
+    pub fn list_measurement_tag_values(
         &self,
         bucket: &str,
         measurement: &str,
@@ -344,7 +325,7 @@ impl Client {
 
             schema.measurementTagValues({params})"#,
         ));
-        self.exec_schema_query(query).await
+        self.exec_schema_query(query)
     }
 
     /// List all tag keys for measurement
@@ -355,7 +336,7 @@ impl Client {
     /// * `measurement` - The measurement name
     /// * `start` - Optional start time. Default is `-30d`
     /// * `stop` - Optional stop time. Default is `now()`
-    pub async fn list_measurement_tag_keys(
+    pub fn list_measurement_tag_keys(
         &self,
         bucket: &str,
         measurement: &str,
@@ -378,26 +359,23 @@ impl Client {
 
             schema.measurementTagKeys({params})"#,
         ));
-        self.exec_schema_query(query).await
+        self.exec_schema_query(query)
     }
 
-    async fn exec_schema_query(&self, query: Query) -> Result<Vec<String>, RequestError> {
-        let req_url = self.url("/api/v2/query");
-        let body = serde_json::to_string(&query).context(Serializing)?;
+    fn exec_schema_query(&self, query: Query) -> Result<Vec<String>, RequestError> {
+        let req_url = self.url("/api/v2/query")?;
 
         let response = self
-            .request(Method::POST, &req_url)
+            .post(req_url)
             .header("Accepting-Encoding", "identity")
             .header("Content-Type", "application/json")
-            .query(&[("org", &self.org)])
-            .body(body)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .query("org", &self.org)
+            .send_json(query)
+            .context(UreqProcessing)?;
 
         match response.status() {
             StatusCode::OK => {
-                let text: String = response.text().await.unwrap();
+                let text: String = response.into_body().read_to_string().unwrap();
 
                 let mut reader = csv::ReaderBuilder::new()
                     .has_headers(true)
@@ -411,7 +389,7 @@ impl Client {
                     .collect())
             }
             status => {
-                let text = response.text().await.context(ReqwestProcessing)?;
+                let text = response.into_body().read_to_string().context(UreqProcessing)?;
                 Http { status, text }.fail()?
             }
         }
@@ -756,8 +734,7 @@ mod tests {
     #[derive(Default, FromDataPoint)]
     struct Empty {}
 
-    #[tokio::test]
-    async fn query_suggestions() {
+    fn query_suggestions() {
         let token = "some-token";
 
         let mock_server = mock("GET", "/api/v2/query/suggestions")
@@ -766,13 +743,12 @@ mod tests {
 
         let client = Client::new(mockito::server_url(), "org", token);
 
-        let _result = client.query_suggestions().await;
+        let _result = client.query_suggestions();
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn query_suggestions_name() {
+    fn query_suggestions_name() {
         let token = "some-token";
         let suggestion_name = "some-name";
 
@@ -789,13 +765,12 @@ mod tests {
 
         let client = Client::new(mockito::server_url(), "org", token);
 
-        let _result = client.query_suggestions_name(suggestion_name).await;
+        let _result = client.query_suggestions_name(suggestion_name);
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn query() {
+    fn query() {
         let token = "some-token";
         let org = "some-org";
         let query: Option<Query> = Some(Query::new("some-influx-query-string".to_string()));
@@ -813,13 +788,12 @@ mod tests {
 
         let client = Client::new(mockito::server_url(), org, token);
 
-        let _result = client.query::<Empty>(query).await;
+        let _result = client.query::<Empty>(query);
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn query_opt() {
+    fn query_opt() {
         let token = "some-token";
         let org = "some-org";
 
@@ -833,13 +807,12 @@ mod tests {
 
         let client = Client::new(mockito::server_url(), org, token);
 
-        let _result = client.query::<Empty>(None).await;
+        let _result = client.query::<Empty>(None);
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn query_analyze() {
+    fn query_analyze() {
         let token = "some-token";
         let query: Option<Query> = Some(Query::new("some-influx-query-string".to_string()));
         let mock_server = mock("POST", "/api/v2/query/analyze")
@@ -854,13 +827,12 @@ mod tests {
 
         let client = Client::new(mockito::server_url(), "org", token);
 
-        let _result = client.query_analyze(query).await;
+        let _result = client.query_analyze(query);
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn query_analyze_opt() {
+    fn query_analyze_opt() {
         let token = "some-token";
         let query: Option<Query> = None;
         let mock_server = mock("POST", "/api/v2/query/analyze")
@@ -875,13 +847,12 @@ mod tests {
 
         let client = Client::new(mockito::server_url(), "org", token);
 
-        let _result = client.query_analyze(query).await;
+        let _result = client.query_analyze(query);
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn query_ast() {
+    fn query_ast() {
         let token = "some-token";
         let language_request: Option<LanguageRequest> =
             Some(LanguageRequest::new("some-influx-query-string".to_string()));
@@ -897,13 +868,12 @@ mod tests {
 
         let client = Client::new(mockito::server_url(), "org", token);
 
-        let _result = client.query_ast(language_request).await;
+        let _result = client.query_ast(language_request);
 
         mock_server.assert();
     }
 
-    #[tokio::test]
-    async fn query_ast_opt() {
+    fn query_ast_opt() {
         let token = "some-token";
         let language_request: Option<LanguageRequest> = None;
         let mock_server = mock("POST", "/api/v2/query/ast")
@@ -918,7 +888,7 @@ mod tests {
 
         let client = Client::new(mockito::server_url(), "org", token);
 
-        let _result = client.query_ast(language_request).await;
+        let _result = client.query_ast(language_request);
 
         mock_server.assert();
     }

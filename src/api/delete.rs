@@ -1,10 +1,9 @@
 //! Delete API
 
 use chrono::NaiveDateTime;
-use reqwest::Method;
 use snafu::ResultExt;
 
-use crate::{Client, Http, RequestError, ReqwestProcessing};
+use crate::{Client, Http, RequestError, UreqProcessing};
 
 impl Client {
     /// Delete data points from a bucket matching specified parameters.
@@ -15,23 +14,23 @@ impl Client {
     /// use chrono::NaiveDate;
     /// use influxdb2::Client;
     ///
-    /// async fn foo() {
+    /// fn foo() {
     ///     let client = Client::new("some-host", "some-org", "some-token");
     ///     let start = NaiveDate::from_ymd(2020, 1, 1).and_hms(0, 0, 0);
     ///     let stop = NaiveDate::from_ymd(2020, 12, 31).and_hms(23, 59, 59);
     ///     let predicate = Some("_measurement=\"some-measurement\"".to_owned());
-    ///     client.delete("some-bucket", start, stop, predicate).await.unwrap();
+    ///     client.delete("some-bucket", start, stop, predicate).unwrap();
     /// }
     /// ```
     ///
-    pub async fn delete(
+    pub fn delete(
         &self,
         bucket: &str,
         start: NaiveDateTime,
         stop: NaiveDateTime,
         predicate: Option<String>,
     ) -> Result<(), RequestError> {
-        let delete_url = self.url("/api/v2/delete");
+        let delete_url = self.url("/api/v2/delete")?;
 
         let body = serde_json
         ::json!({
@@ -42,16 +41,14 @@ impl Client {
         .to_string();
 
         let response = self
-            .request(Method::POST, &delete_url)
-            .query(&[("bucket", bucket), ("org", &self.org)])
-            .body(body)
-            .send()
-            .await
-            .context(ReqwestProcessing)?;
+            .post(delete_url)
+            .query_pairs([("bucket", bucket), ("org", &self.org)])
+            .send(body)
+            .context(UreqProcessing)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.context(ReqwestProcessing)?;
+            let text = response.into_body().read_to_string().context(UreqProcessing)?;
             Http { status, text }.fail()?;
         }
 
@@ -65,8 +62,7 @@ mod tests {
     use chrono::NaiveDate;
     use mockito::mock;
 
-    #[tokio::test]
-    async fn delete_points() {
+    fn delete_points() {
         let org = "some-org";
         let bucket = "some-bucket";
         let token = "some-token";
@@ -85,7 +81,7 @@ mod tests {
 
         let start = NaiveDate::from_ymd(2020, 1, 1).and_hms(0, 0, 0);
         let stop = NaiveDate::from_ymd(2021, 1, 1).and_hms(0, 0, 0);
-        let _result = client.delete(bucket, start, stop, None).await;
+        let _result = client.delete(bucket, start, stop, None);
 
         mock_server.assert();
     }

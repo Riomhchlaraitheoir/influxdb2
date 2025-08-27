@@ -41,7 +41,7 @@ impl Default for StockPrice {
     }
 }
 
-async fn example() -> Result<(), Box<dyn std::error::Error>> {
+fn example() -> Result<(), Box<dyn std::error::Error>> {
     let host = std::env::var("INFLUXDB_HOST").unwrap();
     let org = std::env::var("INFLUXDB_ORG").unwrap();
     let token = std::env::var("INFLUXDB_TOKEN").unwrap();
@@ -54,7 +54,7 @@ async fn example() -> Result<(), Box<dyn std::error::Error>> {
     ", "AAPL");
     let query = Query::new(qs.to_string());
     let res: Vec<StockPrice> = client.query::<StockPrice>(Some(query))
-        .await?;
+        ?;
     println!("{:?}", res);
 
     Ok(())
@@ -77,7 +77,7 @@ struct CpuLoadShort {
     time: i64,
 }
 
-async fn example() -> Result<(), Box<dyn std::error::Error>> {
+fn example() -> Result<(), Box<dyn std::error::Error>> {
     use chrono::Utc;
     use futures::prelude::*;
     use influxdb2::models::DataPoint;
@@ -105,7 +105,7 @@ async fn example() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
-    client.write(bucket, stream::iter(points)).await?;
+    client.write(bucket, stream::iter(points))?;
     
     Ok(())
 }

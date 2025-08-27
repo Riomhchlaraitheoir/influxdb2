@@ -1,11 +1,8 @@
-use futures::prelude::*;
-
 use influxdb2::api::write::TimestampPrecision;
 use influxdb2::models::DataPoint;
 use influxdb2::Client;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = std::env::var("INFLUXDB_HOST").unwrap();
     let org = std::env::var("INFLUXDB_ORG").unwrap();
     let token = std::env::var("INFLUXDB_TOKEN").unwrap();
@@ -20,8 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let points = vec![point];
 
     client
-        .write_with_precision(bucket, stream::iter(points), TimestampPrecision::Seconds)
-        .await?;
+        .write_with_precision(bucket, points, TimestampPrecision::Seconds)
+        ?;
 
     Ok(())
 }
